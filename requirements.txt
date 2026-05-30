@@ -1,0 +1,17 @@
+Flask
+Flask-SQLAlchemy
+Flask-Migrate
+Flask-JWT-Extended
+Flask-CORS
+PyMySQL
+python-dotenv
+bcrypt
+marshmallow
+marshmallow-sqlalchemy
+SQLAlchemy
+Werkzeug
+cryptography
+# ML & Scientific Computing
+numpy
+scipy
+scikit-learn
