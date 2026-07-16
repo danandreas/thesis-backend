@@ -1,0 +1,69 @@
+name: 🚀 Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to Production VPS
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout (hanya untuk verifikasi, pull dilakukan di VPS) ──
+      - name: ✅ Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Deploy via SSH ke VPS ──
+      - name: 🔐 Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            set -e
+            echo "========================================"
+            echo "  🚀 Starting deployment..."
+            echo "========================================"
+
+            PROJECT_DIR="/var/www/html/coba"
+
+            # Pindah ke direktori project
+            cd "$PROJECT_DIR"
+
+            # ── Pull kode terbaru dari GitHub ──
+            echo "📥 Pulling latest code from main..."
+            git pull origin main
+
+            # ── Aktifkan virtual environment ──
+            echo "🐍 Activating virtual environment..."
+            source venv/bin/activate
+
+            # ── Install / update dependencies ──
+            echo "📦 Installing dependencies..."
+            pip install --upgrade pip --quiet
+            pip install -r requirements.txt --quiet
+
+            # ── Jalankan migrasi database (Flask-Migrate) ──
+            echo "🗄️  Running database migrations..."
+            flask db upgrade
+
+            # ── Buat direktori log jika belum ada ──
+            mkdir -p storage/logs
+
+            # ── Restart service (Gunicorn via systemd) ──
+            echo "🔄 Restarting application service..."
+            sudo systemctl restart psychoposition.service
+
+            # ── Verifikasi service berjalan ──
+            sleep 2
+            sudo systemctl is-active --quiet psychoposition.service \
+              && echo "✅ Service is running!" \
+              || (echo "❌ Service failed to start!" && sudo systemctl status psychoposition.service && exit 1)
+
+            echo "========================================"
+            echo "  ✅ Deployment complete!"
+            echo "========================================"
