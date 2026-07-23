@@ -42,17 +42,22 @@ def create_app():
 
 
 def _setup_logging(app):
-    log_dir = os.path.dirname(app.config.get('LOG_FILE', 'storage/logs/app.log'))
-    os.makedirs(log_dir, exist_ok=True)
-
     level = getattr(logging, app.config.get('LOG_LEVEL', 'DEBUG'), logging.DEBUG)
+    handlers = [logging.StreamHandler()]
+
+    # File logging hanya aktif jika bisa membuat direktori (tidak berlaku di Vercel)
+    log_file = app.config.get('LOG_FILE', 'storage/logs/app.log')
+    log_dir = os.path.dirname(log_file)
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        handlers.append(logging.FileHandler(log_file))
+    except OSError:
+        pass  # Filesystem read-only (e.g. Vercel), skip file logging
+
     logging.basicConfig(
         level=level,
         format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-        handlers=[
-            logging.FileHandler(app.config.get('LOG_FILE', 'storage/logs/app.log')),
-            logging.StreamHandler(),
-        ]
+        handlers=handlers
     )
 
 
