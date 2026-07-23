@@ -6,9 +6,20 @@ Struktur URL:
   /api/content/...   → aksi kandidat
   /api/report/...    → laporan & hasil seleksi (admin)
 """
-from flask import Blueprint
+from flask import Blueprint, jsonify
+import datetime
 
 api_bp = Blueprint('api', __name__)
+
+# Health check — tidak butuh database
+@api_bp.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        "success": True,
+        "message": "API is running",
+        "service": "Psychoposition API",
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+    }), 200
 
 # Auth
 from app.controllers.auth_controller import login, register, me, refresh, logout, logout_all
