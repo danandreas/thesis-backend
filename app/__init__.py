@@ -4,6 +4,7 @@ from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
 from flask_cors import CORS
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 
 from config.settings import get_config
@@ -45,12 +46,18 @@ def _setup_logging(app):
     level = getattr(logging, app.config.get('LOG_LEVEL', 'DEBUG'), logging.DEBUG)
     handlers = [logging.StreamHandler()]
 
-    # File logging hanya aktif jika bisa membuat direktori (tidak berlaku di Vercel)
+    # File logging dengan auto-rotate (maks 5MB per file, simpan 3 backup)
     log_file = app.config.get('LOG_FILE', 'storage/logs/app.log')
     log_dir = os.path.dirname(log_file)
     try:
         os.makedirs(log_dir, exist_ok=True)
-        handlers.append(logging.FileHandler(log_file))
+        rotating_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=5 * 1024 * 1024,  # 5 MB
+            backupCount=3,
+            encoding='utf-8'
+        )
+        handlers.append(rotating_handler)
     except OSError:
         pass  # Filesystem read-only (e.g. Vercel), skip file logging
 
