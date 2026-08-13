@@ -21,6 +21,33 @@ def health_check():
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
     }), 200
 
+# Info — informasi umum API (tidak ada data sensitif)
+@api_bp.route('/info', methods=['GET'])
+def api_info():
+    return jsonify({
+        "success": True,
+        "api": {
+            "name": "Psychoposition API",
+            "version": "1.0.0",
+            "description": (
+                "REST API untuk sistem seleksi kandidat berbasis psikologi "
+                "menggunakan metode AHP dan machine learning."
+            ),
+            "language": "Python",
+            "framework": "Flask",
+            "status": "active",
+        },
+        "endpoints": {
+            "auth":    "/api/auth/*    — autentikasi (login, register, token)",
+            "master":  "/api/master/*  — manajemen data master (admin)",
+            "content": "/api/content/* — aksi kandidat (profil, lamaran, asesmen)",
+            "report":  "/api/report/*  — laporan & hasil seleksi (admin)",
+            "health":  "/api/health    — cek status API",
+            "info":    "/api/info      — informasi umum API (halaman ini)",
+        },
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+    }), 200
+
 # Auth
 from app.controllers.auth_controller import login, register, me, refresh, logout, logout_all
 api_bp.add_url_rule('/auth/login',      view_func=login,      methods=['POST'], endpoint='auth_login')
