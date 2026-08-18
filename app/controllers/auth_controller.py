@@ -95,15 +95,22 @@ class AuthController:
             return unauthorized_response()
         return success_response(message="Profile berhasil diambil.", data=user.to_dict())
 
-    @auth_required
     def refresh(self):
         """
         POST /auth/refresh - Tukar refresh_token dengan access_token baru.
         Endpoint ini harus dikirim dengan refresh_token (bukan access_token).
         Setelah refresh, refresh_token lama di-blacklist agar tidak bisa dipakai ulang.
         """
+        # Bug #9 fix: gunakan verify_jwt_in_request(refresh=True) bukan @auth_required
+        # supaya endpoint ini menerima refresh_token, bukan access_token
+        try:
+            verify_jwt_in_request(refresh=True)
+        except Exception:
+            from app.helpers import unauthorized_response as _unauth
+            return _unauth("Refresh token tidak valid atau sudah kadaluarsa.")
+
         jwt_data = get_jwt()
-        user_id = get_jwt_identity()
+        user_id  = get_jwt_identity()
 
         user = User.find(user_id)
         if not user:
@@ -122,17 +129,18 @@ class AuthController:
         )
 
         # Terbitkan token baru (access + refresh baru)
-        new_access_token = create_access_token(identity=str(user.id))
+        new_access_token  = create_access_token(identity=str(user.id))
         new_refresh_token = create_refresh_token(identity=str(user.id))
 
         return success_response(
             message="Token berhasil diperbarui.",
             data={
-                "access_token": new_access_token,
+                "access_token":  new_access_token,
                 "refresh_token": new_refresh_token,
-                "token_type": "Bearer",
+                "token_type":    "Bearer",
             }
         )
+
 
     @auth_required
     def logout(self):
@@ -160,26 +168,65 @@ class AuthController:
     def logout_all(self):
         """
         POST /auth/logout-all - Logout dari semua device.
-        Tidak mungkin blacklist semua token yang beredar (kita tidak tahu jti-nya),
-        maka kita simpan 'revoked_before' timestamp per user — semua token
-        yang diterbitkan sebelum waktu ini otomatis ditolak.
-        Implementasi sederhana: revoke semua entry blacklist user ini lalu
-        set flag di user (perlu kolom tambahan) ATAU pakai pendekatan
-        'force_logout_at' di tabel users.
         """
         user = get_current_user()
         if not user:
             return unauthorized_response()
-
-        # Update force_logout_at di user → semua token lama otomatis invalid
         user.update(force_logout_at=datetime.utcnow())
-
         return success_response(message="Berhasil logout dari semua perangkat.")
 
+    @auth_required
+    def update_me(self):
+        """
+        PUT /auth/me - Update profil user yang sedang login (nama, phone, address).
+        Bisa dipakai oleh semua role (admin maupun kandidat).
+        """
+        from flask import request as flask_request
+        from app import db as _db
+        user = get_current_user()
+        if not user:
+            return unauthorized_response()
+
+        body = flask_request.get_json() or {}
+        for field in ['name', 'phone', 'address']:
+            if field in body:
+                setattr(user, field, body[field])
+        _db.session.commit()
+        return success_response(message="Profil berhasil diperbarui.", data=user.to_dict())
+
+    @auth_required
+    def update_password(self):
+        """
+        PUT /auth/me/password - Ganti password user yang sedang login.
+        Body: { current_password, password, password_confirm }
+        """
+        from flask import request as flask_request
+        user = get_current_user()
+        if not user:
+            return unauthorized_response()
+
+        body = flask_request.get_json() or {}
+        current_pw  = body.get('current_password', '')
+        new_pw      = body.get('password', '')
+        confirm_pw  = body.get('password_confirm', '')
+
+        if not user.check_password(current_pw):
+            return error_response("Password saat ini tidak valid.", code=422)
+        if len(new_pw) < 6:
+            return error_response("Password baru minimal 6 karakter.", code=422)
+        if new_pw != confirm_pw:
+            return error_response("Konfirmasi password tidak cocok.", code=422)
+
+        user.set_password(new_pw)
+        user.save()
+        return success_response(message="Password berhasil diubah.")
+
 _auth_controller = AuthController()
-register = _auth_controller.register
-login = _auth_controller.login
-me = _auth_controller.me
-refresh = _auth_controller.refresh
-logout = _auth_controller.logout
-logout_all = _auth_controller.logout_all
+register        = _auth_controller.register
+login           = _auth_controller.login
+me              = _auth_controller.me
+refresh         = _auth_controller.refresh
+logout          = _auth_controller.logout
+logout_all      = _auth_controller.logout_all
+update_me       = _auth_controller.update_me
+update_password = _auth_controller.update_password

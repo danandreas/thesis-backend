@@ -22,9 +22,48 @@ from app.middleware.auth_middleware import admin_required
 @jwt_required()
 @admin_required
 def recruitment_index():
-    """GET /api/master/recruitments"""
-    items = Recruitment.query.order_by(Recruitment.id.desc()).all()
-    return success(data=[r.to_dict() for r in items])
+    """
+    GET /api/master/recruitments
+    Query params:
+      - page     : nomor halaman (default 1)
+      - per_page : item per halaman (default 20, max 100)
+      - search   : cari berdasarkan title / code
+      - status   : filter status (draft|active|closed)
+    """
+    page     = int(request.args.get('page',     1))
+    per_page = min(int(request.args.get('per_page', 20)), 100)
+    search   = request.args.get('search',  '').strip()
+    status   = request.args.get('status',  '').strip()
+
+    q = Recruitment.query
+    if search:
+        q = q.filter(
+            db.or_(
+                Recruitment.title.ilike(f'%{search}%'),
+                Recruitment.code.ilike(f'%{search}%'),
+            )
+        )
+    if status:
+        q = q.filter(Recruitment.status == status)
+
+    paginated = q.order_by(Recruitment.id.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+
+    result = []
+    for r in paginated.items:
+        d = r.to_dict()
+        d['positions'] = [p.to_dict() for p in r.positions]
+        result.append(d)
+
+    return success(data={
+        'items':       result,
+        'total':       paginated.total,
+        'page':        paginated.page,
+        'per_page':    paginated.per_page,
+        'total_pages': paginated.pages,
+    })
+
 
 
 @jwt_required()
@@ -87,13 +126,28 @@ def recruitment_publish(id):
     if item.status != 'draft':
         return error(f"Rekrutmen berstatus '{item.status}', tidak bisa dipublish.", 422)
 
-    # Validasi: minimal harus ada 1 posisi dengan kriteria dan pertanyaan
+    if not list(item.positions):
+        return error("Rekrutmen harus memiliki minimal satu posisi.", 422)
+
+    # Validasi: setiap posisi harus punya kriteria + pertanyaan
     for pos in item.positions:
         if pos.criteria_setup.count() == 0:
             return error(f"Posisi '{pos.title}' belum memiliki setup kriteria.", 422)
 
+        # Bug #12 fix: cek setiap kriteria punya minimal 1 pertanyaan aktif
+        for pc in pos.criteria_setup.all():
+            q_count = pc.questions.filter_by(is_active=True).count()
+            if q_count == 0:
+                return error(
+                    f"Kriteria '{pc.criteria.name}' pada posisi '{pos.title}' "
+                    f"belum memiliki pertanyaan asesmen. "
+                    f"Tambahkan minimal 1 pertanyaan sebelum publish.",
+                    422
+                )
+
     item.publish()
     return success(data=item.to_dict(), message="Rekrutmen berhasil dipublish.")
+
 
 
 @jwt_required()
@@ -164,6 +218,44 @@ def requirement_setup(recruitment_id):
     return success(data=data, message="Syarat tambahan berhasil disimpan.")
 
 
+@jwt_required()
+@admin_required
+def requirement_update(recruitment_id, requirement_id):
+    """
+    PUT /api/master/recruitments/<id>/requirements/<rid>
+    Update satu syarat tambahan.
+    """
+    rr = RecruitmentRequirement.query.filter_by(
+        id=requirement_id, recruitment_id=recruitment_id
+    ).first_or_404()
+    body = request.get_json() or {}
+    if 'weight' in body:
+        rr.weight = float(body['weight'])
+    if 'minimum_value' in body:
+        rr.minimum_value = body['minimum_value']
+    if 'is_mandatory' in body:
+        rr.is_mandatory = bool(body['is_mandatory'])
+    if 'display_order' in body:
+        rr.display_order = int(body['display_order'])
+    db.session.commit()
+    return success(data=rr.to_dict(), message="Syarat tambahan berhasil diperbarui.")
+
+
+@jwt_required()
+@admin_required
+def requirement_destroy(recruitment_id, requirement_id):
+    """
+    DELETE /api/master/recruitments/<id>/requirements/<rid>
+    Hapus satu syarat tambahan.
+    """
+    rr = RecruitmentRequirement.query.filter_by(
+        id=requirement_id, recruitment_id=recruitment_id
+    ).first_or_404()
+    db.session.delete(rr)
+    db.session.commit()
+    return success(message="Syarat tambahan berhasil dihapus.")
+
+
 # ─────────────────────────────────────────────────────────────
 # POSITION CRUD
 # ─────────────────────────────────────────────────────────────
@@ -206,6 +298,7 @@ def position_show(recruitment_id, position_id):
         id=position_id, recruitment_id=recruitment_id
     ).first_or_404()
     data = pos.to_dict()
+    data['recruitment_title'] = pos.recruitment.title if pos.recruitment else None
     data['criteria_setup'] = [pc.to_dict() for pc in pos.criteria_setup.order_by(
         PositionCriteria.display_order)]
     return success(data=data)
@@ -286,6 +379,44 @@ def position_criteria_setup(recruitment_id, position_id):
     data['criteria_setup'] = [pc.to_dict() for pc in pos.criteria_setup.order_by(
         PositionCriteria.display_order)]
     return success(data=data, message="Setup kriteria posisi berhasil disimpan.")
+
+
+@jwt_required()
+@admin_required
+def position_criteria_update(position_criteria_id):
+    """
+    PUT /api/master/position-criteria/<id>
+    Update satu kriteria posisi.
+    """
+    pc   = PositionCriteria.query.get_or_404(position_criteria_id)
+    body = request.get_json() or {}
+    if 'weight_manual' in body:
+        pc.weight_manual = float(body['weight_manual'])
+    if 'fuzzy_low' in body:
+        pc.fuzzy_low = float(body['fuzzy_low'])
+    if 'fuzzy_mid' in body:
+        pc.fuzzy_mid = float(body['fuzzy_mid'])
+    if 'fuzzy_high' in body:
+        pc.fuzzy_high = float(body['fuzzy_high'])
+    if 'criteria_type' in body:
+        pc.criteria_type = body['criteria_type']
+    if 'display_order' in body:
+        pc.display_order = int(body['display_order'])
+    db.session.commit()
+    return success(data=pc.to_dict(), message="Kriteria posisi berhasil diperbarui.")
+
+
+@jwt_required()
+@admin_required
+def position_criteria_destroy(position_criteria_id):
+    """
+    DELETE /api/master/position-criteria/<id>
+    Hapus satu kriteria posisi beserta semua pertanyaannya.
+    """
+    pc = PositionCriteria.query.get_or_404(position_criteria_id)
+    db.session.delete(pc)
+    db.session.commit()
+    return success(message="Kriteria posisi berhasil dihapus.")
 
 
 # ─────────────────────────────────────────────────────────────

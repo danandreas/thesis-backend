@@ -61,12 +61,22 @@ def profile_update():
         profile = CandidateProfile(user_id=user.id)
         db.session.add(profile)
 
+    # Bug #16 fix: validasi gender enum sebelum ke DB agar error 422, bukan 500
+    if 'gender' in body:
+        valid_genders = ('male', 'female', 'other')
+        if body['gender'] not in valid_genders:
+            return error(
+                f"Nilai gender tidak valid. Gunakan: {', '.join(valid_genders)}.",
+                422
+            )
+
     for field in ['birth_date', 'gender', 'linkedin_url', 'resume_url']:
         if field in body:
             setattr(profile, field, body[field])
 
     db.session.commit()
     return success(data=profile.to_dict(), message="Profil berhasil diperbarui.")
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -151,27 +161,43 @@ def education_destroy(id):
 
 @jwt_required()
 def recruitment_list():
-    """GET /api/content/recruitments — Daftar rekrutmen aktif."""
+    """GET /api/content/recruitments — Daftar rekrutmen aktif + status aplikasi user."""
+    from app.models import CandidateApplication
+    user = _get_current_user()
     items = Recruitment.query.filter_by(status='active').all()
     result = []
     for r in items:
-        d = {
-            'id': r.id,
-            'code': r.code,
-            'title': r.title,
-            'description': r.description,
-            'published_at': r.published_at.isoformat() if r.published_at else None,
-            'positions': [
+        positions = []
+        for p in r.positions.filter_by(status='active'):
+            app = CandidateApplication.query.filter_by(
+                user_id=user.id, position_id=p.id
+            ).first()
+            positions.append({
+                'id':                    p.id,
+                'title':                 p.title,
+                'description':           p.description,
+                'quota':                 p.quota,
+                'my_application_status': app.status if app else None,
+                'my_application_id':     app.id if app else None,
+            })
+        active_reqs = r.requirements.filter(RecruitmentRequirement.weight > 0).all()
+        result.append({
+            'id':                r.id,
+            'code':              r.code,
+            'title':             r.title,
+            'description':       r.description,
+            'assessment_weight': r.get_assessment_weight(),
+            'published_at':      r.published_at.isoformat() if r.published_at else None,
+            'positions':         positions,
+            'requirements': [
                 {
-                    'id': p.id,
-                    'title': p.title,
-                    'description': p.description,
-                    'quota': p.quota,
+                    'weight':       float(rq.weight),
+                    'is_mandatory': rq.is_mandatory,
+                    'requirement_type': {'name': rq.requirement_type.name},
                 }
-                for p in r.positions.filter_by(status='active')
+                for rq in active_reqs
             ],
-        }
-        result.append(d)
+        })
     return success(data=result)
 
 
@@ -293,11 +319,27 @@ def assessment_questions(application_id):
     # Acak urutan pertanyaan agar tidak ketahuan pola kriterianya
     random.shuffle(all_questions)
 
+    # Ambil requirements rekrutmen yang perlu diisi kandidat
+    recruitment = app.position.recruitment
+    req_infos = []
+    for rr in recruitment.requirements.filter(RecruitmentRequirement.weight > 0).all():
+        rt = rr.requirement_type
+        req_infos.append({
+            'recruitment_requirement_id': rr.id,
+            'name':         rt.name,
+            'value_type':   rt.value_type,
+            'min_value':    float(rt.min_value),
+            'max_value':    float(rt.max_value),
+            'unit':         rt.unit,
+            'is_mandatory': rr.is_mandatory,
+        })
+
     return success(data={
-        'application_id': application_id,
-        'position_title': app.position.title,
+        'application_id':  application_id,
+        'position_title':  app.position.title,
         'total_questions': len(all_questions),
-        'questions': all_questions,
+        'questions':       all_questions,
+        'requirements':    req_infos,
     })
 
 
@@ -362,6 +404,26 @@ def assessment_submit(application_id):
     for r in reqs:
         rr_id = r.get('recruitment_requirement_id')
         val   = r.get('raw_value', 0)
+
+        # Bug #11 fix: validasi range nilai terhadap RequirementType.min_value / max_value
+        rr = RecruitmentRequirement.query.get(rr_id)
+        if rr:
+            rt = rr.requirement_type
+            try:
+                val_float = float(val)
+            except (TypeError, ValueError):
+                db.session.rollback()
+                return error(f"Nilai '{rt.name}' harus berupa angka.", 422)
+
+            if val_float < float(rt.min_value) or val_float > float(rt.max_value):
+                db.session.rollback()
+                return error(
+                    f"Nilai '{rt.name}' harus antara {rt.min_value} dan {rt.max_value}. "
+                    f"Nilai yang dikirim: {val_float}.",
+                    422
+                )
+            val = val_float
+
         cr = CandidateRequirement(
             application_id=app.id,
             recruitment_requirement_id=rr_id,
@@ -383,6 +445,7 @@ def assessment_submit(application_id):
             return error(
                 f"Syarat '{mr.requirement_type.name}' wajib diisi.", 422
             )
+
 
     # Update status
     app.status       = 'submitted'

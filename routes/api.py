@@ -49,13 +49,15 @@ def api_info():
     }), 200
 
 # Auth
-from app.controllers.auth_controller import login, register, me, refresh, logout, logout_all
-api_bp.add_url_rule('/auth/login',      view_func=login,      methods=['POST'], endpoint='auth_login')
-api_bp.add_url_rule('/auth/register',   view_func=register,   methods=['POST'], endpoint='auth_register')
-api_bp.add_url_rule('/auth/me',         view_func=me,         methods=['GET'],  endpoint='auth_me')
-api_bp.add_url_rule('/auth/refresh',    view_func=refresh,    methods=['POST'], endpoint='auth_refresh')
-api_bp.add_url_rule('/auth/logout',     view_func=logout,     methods=['POST'], endpoint='auth_logout')
-api_bp.add_url_rule('/auth/logout-all', view_func=logout_all, methods=['POST'], endpoint='auth_logout_all')
+from app.controllers.auth_controller import login, register, me, refresh, logout, logout_all, update_me, update_password
+api_bp.add_url_rule('/auth/login',      view_func=login,            methods=['POST'], endpoint='auth_login')
+api_bp.add_url_rule('/auth/register',   view_func=register,         methods=['POST'], endpoint='auth_register')
+api_bp.add_url_rule('/auth/me',         view_func=me,               methods=['GET'],  endpoint='auth_me')
+api_bp.add_url_rule('/auth/me',         view_func=update_me,        methods=['PUT'],  endpoint='auth_update_me')
+api_bp.add_url_rule('/auth/me/password',view_func=update_password,  methods=['PUT'],  endpoint='auth_update_password')
+api_bp.add_url_rule('/auth/refresh',    view_func=refresh,          methods=['POST'], endpoint='auth_refresh')
+api_bp.add_url_rule('/auth/logout',     view_func=logout,           methods=['POST'], endpoint='auth_logout')
+api_bp.add_url_rule('/auth/logout-all', view_func=logout_all,       methods=['POST'], endpoint='auth_logout_all')
 
 # Master: Users & Roles
 from app.controllers.user_controller import index as u_index, store as u_store, show as u_show, update as u_update, destroy as u_destroy
@@ -91,9 +93,9 @@ api_bp.add_url_rule('/master/requirement-types/<int:id>', view_func=reqtype_dest
 from app.controllers.master.recruitment_controller import (
     recruitment_index, recruitment_store, recruitment_show,
     recruitment_update, recruitment_publish, recruitment_close, recruitment_destroy,
-    requirement_setup,
+    requirement_setup, requirement_update, requirement_destroy,
     position_index, position_store, position_show, position_update, position_destroy,
-    position_criteria_setup,
+    position_criteria_setup, position_criteria_update, position_criteria_destroy,
     question_index, question_store, question_update, question_destroy,
     option_store, option_update, option_destroy,
 )
@@ -104,13 +106,17 @@ api_bp.add_url_rule('/master/recruitments/<int:id>',         view_func=recruitme
 api_bp.add_url_rule('/master/recruitments/<int:id>/publish', view_func=recruitment_publish, methods=['POST'],   endpoint='recruitment_publish')
 api_bp.add_url_rule('/master/recruitments/<int:id>/close',   view_func=recruitment_close,   methods=['POST'],   endpoint='recruitment_close')
 api_bp.add_url_rule('/master/recruitments/<int:id>',         view_func=recruitment_destroy, methods=['DELETE'], endpoint='recruitment_destroy')
-api_bp.add_url_rule('/master/recruitments/<int:recruitment_id>/requirements', view_func=requirement_setup, methods=['POST'], endpoint='requirement_setup')
+api_bp.add_url_rule('/master/recruitments/<int:recruitment_id>/requirements',              view_func=requirement_setup,            methods=['POST'],   endpoint='requirement_setup')
+api_bp.add_url_rule('/master/recruitments/<int:recruitment_id>/requirements/<int:requirement_id>', view_func=requirement_update,  methods=['PUT'],    endpoint='requirement_update')
+api_bp.add_url_rule('/master/recruitments/<int:recruitment_id>/requirements/<int:requirement_id>', view_func=requirement_destroy, methods=['DELETE'], endpoint='requirement_destroy')
 api_bp.add_url_rule('/master/recruitments/<int:recruitment_id>/positions',                            view_func=position_index,          methods=['GET'],    endpoint='position_index')
 api_bp.add_url_rule('/master/recruitments/<int:recruitment_id>/positions',                            view_func=position_store,          methods=['POST'],   endpoint='position_store')
 api_bp.add_url_rule('/master/recruitments/<int:recruitment_id>/positions/<int:position_id>',          view_func=position_show,           methods=['GET'],    endpoint='position_show')
 api_bp.add_url_rule('/master/recruitments/<int:recruitment_id>/positions/<int:position_id>',          view_func=position_update,         methods=['PUT'],    endpoint='position_update')
 api_bp.add_url_rule('/master/recruitments/<int:recruitment_id>/positions/<int:position_id>',          view_func=position_destroy,        methods=['DELETE'], endpoint='position_destroy')
 api_bp.add_url_rule('/master/recruitments/<int:recruitment_id>/positions/<int:position_id>/criteria', view_func=position_criteria_setup, methods=['POST'],   endpoint='position_criteria_setup')
+api_bp.add_url_rule('/master/position-criteria/<int:position_criteria_id>',            view_func=position_criteria_update,  methods=['PUT'],    endpoint='position_criteria_update')
+api_bp.add_url_rule('/master/position-criteria/<int:position_criteria_id>',            view_func=position_criteria_destroy, methods=['DELETE'], endpoint='position_criteria_destroy')
 api_bp.add_url_rule('/master/position-criteria/<int:position_criteria_id>/questions',                 view_func=question_index,          methods=['GET'],    endpoint='question_index')
 api_bp.add_url_rule('/master/position-criteria/<int:position_criteria_id>/questions',                 view_func=question_store,          methods=['POST'],   endpoint='question_store')
 api_bp.add_url_rule('/master/position-criteria/<int:position_criteria_id>/questions/<int:question_id>', view_func=question_update,       methods=['PUT'],    endpoint='question_update')
