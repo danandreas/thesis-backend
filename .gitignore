@@ -56,3 +56,5 @@ coverage.xml
 # Distribution
 *.tar.gz
 *.zip
+
+info.txt

@@ -67,7 +67,7 @@ def seed():
         # ── Candidate users ──────────────────────────────────────────
         print("\n📦 Seeding candidates (20)...")
         candidate_data = [
-            ('Budi Santoso',      'budi@email.com'),
+            ('Budi Utomo',      'budi@email.com'),
             ('Rina Wijaya',       'rina@email.com'),
             ('Eko Prasetyo',      'eko@email.com'),
             ('Dewi Lestari',      'dewi@email.com'),
