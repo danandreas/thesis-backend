@@ -76,6 +76,9 @@ class MlWeightResult(BaseModel):
         if self.position_criteria and self.position_criteria.criteria:
             data['criteria_name'] = self.position_criteria.criteria.name
             data['criteria_code'] = self.position_criteria.criteria.code
+        # Alias agar konsisten dengan response generate_ranking yang dipakai frontend
+        data['weight_ml'] = data.get('weight_final')
+        data['difference'] = data.get('weight_difference')
         return data
 
     def __repr__(self):
