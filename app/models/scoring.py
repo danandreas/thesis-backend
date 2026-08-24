@@ -176,7 +176,7 @@ class RankingResult(BaseModel):
     generated_at      = db.Column(db.DateTime, nullable=True)
 
     # Relasi
-    application = db.relationship('CandidateApplication', backref='ranking_result')
+    application = db.relationship('CandidateApplication', backref=db.backref('ranking_result', uselist=False))
 
     def to_dict(self, exclude=None):
         data = super().to_dict(exclude=exclude or [])
