@@ -58,25 +58,74 @@ def generate_ranking(position_id):
 def ranking_by_position(position_id):
     """
     GET /api/report/ranking/<position_id>
-    Lihat ranking kandidat per posisi (dua versi: manual vs ML).
+    Lihat ranking kandidat per posisi (dua lintasan: A=Fuzzy-ELECTRE, B=Fuzzy-TOPSIS),
+    termasuk metrik perbandingan (ρ, τ, durasi, konvergensi PSO) dari log terakhir.
     """
     pos = RecruitmentPosition.query.get_or_404(position_id)
     rankings = RankingResult.query.filter_by(
         position_id=position_id
-    ).order_by(RankingResult.rank_ml).all()
+    ).order_by(RankingResult.rank_a).all()
 
     if not rankings:
         return error("Ranking belum di-generate untuk posisi ini.", 404)
 
-    # Bobot per kriteria (perbandingan manual vs ML)
+    # Skor per lintasan dari scoring_results (skor A = min-max net ELECTRE ×100,
+    # skor B = min-max closeness TOPSIS ×100 — rumus sama dengan generate_ranking)
+    app_ids = [r.application_id for r in rankings]
+    scoring_results = ScoringResult.query.filter(
+        ScoringResult.application_id.in_(app_ids)
+    ).all()
+    sr_by_app = {sr.application_id: sr for sr in scoring_results}
+    nets   = [float(sr_by_app[r.application_id].electre_net_ml or 0) if sr_by_app.get(r.application_id) else 0.0 for r in rankings]
+    closes = [float(sr_by_app[r.application_id].closeness_b or 0) if sr_by_app.get(r.application_id) else 0.0 for r in rankings]
+    net_lo, net_hi = min(nets), max(nets)
+    cl_lo,  cl_hi  = min(closes), max(closes)
+    def sk_a(v): return 100.0 if net_hi == net_lo else round((v - net_lo) / (net_hi - net_lo) * 100, 2)
+    def sk_b(v): return 100.0 if cl_hi == cl_lo else round((v - cl_lo) / (cl_hi - cl_lo) * 100, 2)
+
+    # Bobot per kriteria (bobot manual hanya baseline justifikasi)
     weights = MlWeightResult.query.filter_by(position_id=position_id).all()
+
+    # Log proses terakhir yang completed → sumber panel perbandingan & kurva PSO
+    # MySQL: DESC sudah menempatkan NULL paling akhir (NULLS LAST adalah
+    # sintaks PostgreSQL dan bikin error 1064 di MySQL).
+    log_last = MlProcessLog.query.filter_by(
+        position_id=position_id, status='completed'
+    ).order_by(MlProcessLog.processed_at.desc(),
+               MlProcessLog.id.desc()).first()
+    process_info = None
+    if log_last:
+        params = log_last.pso_parameters or {}
+        process_info = {
+            'pso_converged': bool(log_last.pso_converged),
+            'pso_iterations': log_last.pso_iterations_used,
+            'pso_best_fitness': float(log_last.pso_best_fitness) if log_last.pso_best_fitness is not None else None,
+            'pso_fitness_history': params.get('fitness_history') or [],
+            'spearman_correlation': float(log_last.spearman_correlation) if log_last.spearman_correlation is not None else None,
+            'kendall_tau': float(log_last.kendall_tau) if log_last.kendall_tau is not None else None,
+            'rank_changes_count': log_last.rank_changes_count,
+            'total_candidates': log_last.total_candidates,
+            'process_duration_ms': log_last.process_duration_ms,
+            'processed_at': log_last.processed_at.isoformat() if log_last.processed_at else None,
+        }
+
+    ranking_items = []
+    for i, r in enumerate(rankings):
+        item = r.to_dict()
+        item['skor_a'] = sk_a(nets[i])          # skor Lintasan A (0-100)
+        item['skor_b'] = sk_b(closes[i])        # skor Lintasan B (0-100)
+        item['closeness_b'] = round(closes[i], 4)
+        item['electre_net_ml'] = round(nets[i], 4)
+        item['d_rank'] = (r.rank_a or 0) - (r.rank_b or 0)  # displacement
+        ranking_items.append(item)
 
     return success(data={
         'position_id': position_id,
         'position_title': pos.title,
         'quota': pos.quota,
-        'ranking': [r.to_dict() for r in rankings],
+        'ranking': ranking_items,
         'weight_comparison': [w.to_dict() for w in weights],
+        'process_info': process_info,
     })
 
 
@@ -119,25 +168,20 @@ def ranking_detail(position_id, application_id):
 
 
 # ─────────────────────────────────────────────────────────────
-# HUMAN-IN-THE-LOOP: Admin memilih versi ranking
+# FINALIZE: keputusan akhir (Human-in-the-Loop dua lintasan)
 # ─────────────────────────────────────────────────────────────
 
 @jwt_required()
 @admin_required
-def choose_ranking_version(position_id):
+def finalize_position(position_id):
     """
-    POST /api/report/ranking/<position_id>/choose
-    Admin memilih menggunakan versi manual atau ML.
-    Body: {"choice": "ml"} atau {"choice": "manual"}
-
-    Setelah memilih, final_rank dan final_score diupdate.
+    POST /api/report/ranking/<position_id>/finalize
+    Finalize otomatis seluruh kandidat satu posisi:
+      - masuk kuota pada KEDUA lintasan → accepted
+      - masuk kuota pada SATU lintasan → review (perlu konfirmasi admin)
+      - sisanya → rejected
+    final_rank / final_score diambil dari Lintasan A (ELECTRE).
     """
-    body   = request.get_json() or {}
-    choice = body.get('choice', 'ml')
-
-    if choice not in ['manual', 'ml']:
-        return error("Pilihan harus 'manual' atau 'ml'.", 422)
-
     rankings = RankingResult.query.filter_by(
         position_id=position_id
     ).all()
@@ -145,23 +189,30 @@ def choose_ranking_version(position_id):
     if not rankings:
         return error("Ranking belum di-generate.", 404)
 
-    pos   = RecruitmentPosition.query.get_or_404(position_id)
+    pos = RecruitmentPosition.query.get_or_404(position_id)
     quota = pos.quota
 
+    counts = {'accepted': 0, 'review': 0, 'rejected': 0}
     for rr in rankings:
-        rr.admin_choice = choice
-        if choice == 'ml':
-            rr.final_rank  = rr.rank_ml
-            rr.final_score = rr.final_score_ml
+        ra, rb = rr.rank_a if rr.rank_a is not None else rr.rank_ml, rr.rank_b
+        in_a, in_b = (ra is not None and ra <= quota), (rb is not None and rb <= quota)
+        if in_a and in_b:
+            status = 'accepted'
+        elif in_a or in_b:
+            status = 'review'
         else:
-            rr.final_rank  = rr.rank_manual
-            rr.final_score = rr.final_score_manual
-        rr.is_recommended = rr.final_rank <= quota
+            status = 'rejected'
+        rr.final_status = status
+        rr.final_rank  = ra
+        rr.final_score = rr.final_score_ml
+        rr.is_recommended = in_a
+        counts[status] = counts.get(status, 0) + 1
 
     db.session.commit()
     return success(
-        message=f"Ranking versi '{choice}' berhasil dipilih sebagai final.",
-        data={'choice': choice, 'total_updated': len(rankings)}
+        message="Finalize otomatis selesai: 2 lintasan dipertimbangkan bersama.",
+        data={'auto_status_counts': counts, 'quota': quota,
+              'ranking': [r.to_dict() for r in rankings]}
     )
 
 
@@ -170,7 +221,8 @@ def choose_ranking_version(position_id):
 def finalize_candidate(position_id, application_id):
     """
     POST /api/report/ranking/<position_id>/finalize/<application_id>
-    Admin menetapkan status akhir kandidat: accepted atau rejected.
+    Admin menetapkan status akhir satu kandidat (penyesuaian manual atas
+    hasil finalize otomatis): accepted / rejected / review (atau pending).
     Body: {"status": "accepted", "notes": "..."}
     """
     rr  = RankingResult.query.filter_by(
@@ -181,8 +233,8 @@ def finalize_candidate(position_id, application_id):
     body   = request.get_json() or {}
     status = body.get('status', 'pending')
 
-    if status not in ['accepted', 'rejected', 'pending']:
-        return error("Status harus 'accepted', 'rejected', atau 'pending'.", 422)
+    if status not in ['accepted', 'rejected', 'pending', 'review']:
+        return error("Status harus 'accepted', 'rejected', 'review', atau 'pending'.", 422)
 
     rr.final_status = status
     app = rr.application

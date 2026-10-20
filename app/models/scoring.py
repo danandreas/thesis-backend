@@ -116,6 +116,9 @@ class ScoringResult(BaseModel):
     electre_discordance_ml      = db.Column(db.Numeric(10, 4), nullable=True)
     electre_net_ml              = db.Column(db.Numeric(10, 4), nullable=True)
 
+    # Lintasan B — Fuzzy-TOPSIS (closeness 0-1)
+    closeness_b                 = db.Column(db.Numeric(10, 4), nullable=True)
+
     # Skor final gabungan — dua versi
     final_score_manual        = db.Column(db.Numeric(10, 4), nullable=True)
     final_score_ml            = db.Column(db.Numeric(10, 4), nullable=True)
@@ -133,7 +136,7 @@ class ScoringResult(BaseModel):
             'assessment_score_manual', 'assessment_score_ml', 'requirements_score',
             'electre_concordance_manual', 'electre_discordance_manual', 'electre_net_manual',
             'electre_concordance_ml', 'electre_discordance_ml', 'electre_net_ml',
-            'final_score_manual', 'final_score_ml'
+            'closeness_b', 'final_score_manual', 'final_score_ml'
         ]
         for f in numeric_fields:
             data[f] = float(data[f]) if data[f] is not None else None
@@ -145,13 +148,14 @@ class ScoringResult(BaseModel):
 
 class RankingResult(BaseModel):
     """
-    Peringkat akhir kandidat per posisi.
-    Menyimpan DUA versi ranking untuk Human-in-the-Loop:
-      rank_manual : berdasarkan bobot admin
-      rank_ml     : berdasarkan bobot ML
+    Peringkat akhir kandidat per posisi pada DUA lintasan:
+      rank_a  : Lintasan A — Fuzzy-ELECTRE (bobot EWM-PSO)
+      rank_b  : Lintasan B — Fuzzy-TOPSIS (bobot EWM-PSO)
+      rank_ml : legacy kolom lama, diisi = rank_a
+      (admin_choice: legacy HOTL manual/ml — tidak dipakai desain final)
 
-    Admin memilih versi mana yang dipakai (admin_choice)
-    lalu menetapkan final_rank dan final_status.
+    Admin menetapkan final_rank dan final_status lewat finalize
+    (otomatis + penyesuaian manual: accepted / review / rejected).
     """
     __tablename__ = 'ranking_results'
 
@@ -164,13 +168,17 @@ class RankingResult(BaseModel):
     rank_ml           = db.Column(db.Integer, nullable=True)
     final_score_ml    = db.Column(db.Numeric(10, 4), nullable=True)
 
+    # Dua lintasan: A = Fuzzy-ELECTRE, B = Fuzzy-TOPSIS (bobot EWM-PSO sama)
+    rank_a            = db.Column(db.Integer, nullable=True)
+    rank_b            = db.Column(db.Integer, nullable=True)
+
     # Keputusan admin
     admin_choice      = db.Column(db.Enum('manual', 'ml'), nullable=True)
     final_rank        = db.Column(db.Integer, nullable=True)
     final_score       = db.Column(db.Numeric(10, 4), nullable=True)
     is_recommended    = db.Column(db.Boolean, nullable=False, default=False)
     final_status      = db.Column(
-        db.Enum('pending', 'accepted', 'rejected'),
+        db.Enum('pending', 'accepted', 'rejected', 'review'),
         nullable=False, default='pending'
     )
     generated_at      = db.Column(db.DateTime, nullable=True)
@@ -216,6 +224,7 @@ class MlProcessLog(BaseModel):
 
     # Metrik perbandingan
     spearman_correlation = db.Column(db.Numeric(6, 4), nullable=True)
+    kendall_tau          = db.Column(db.Numeric(6, 4), nullable=True)
     rank_changes_count   = db.Column(db.Integer, nullable=True)
     total_candidates     = db.Column(db.Integer, nullable=True)
 
@@ -230,7 +239,7 @@ class MlProcessLog(BaseModel):
 
     def to_dict(self, exclude=None):
         data = super().to_dict(exclude=exclude or [])
-        for f in ['pso_best_fitness', 'spearman_correlation']:
+        for f in ['pso_best_fitness', 'spearman_correlation', 'kendall_tau']:
             data[f] = float(data[f]) if data[f] is not None else None
         return data
 

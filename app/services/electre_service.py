@@ -53,6 +53,7 @@ class ELECTREService:
                 'net_concordance': [1.0] * n,
                 'net_discordance': [0.0] * n,
                 'net_score': [1.0] * n,
+                'score': [100.0] * n,
                 'ranking': [1] * n,
                 'warning': 'Hanya 1 kandidat, ELECTRE tidak dapat dijalankan'
             }
@@ -119,12 +120,14 @@ class ELECTREService:
         net_concordance = []
         net_discordance = []
         for a in range(n):
-            c_sum = sum(concordance[a, b] for b in range(n) if b != a)
-            c_opp = sum(concordance[b, a] for b in range(n) if b != a)
+            # Sum di atas elemen numpy menghasilkan np.float64 — dibungkus
+            # float() agar aman lewat jsonify & perhitungan lanjutan.
+            c_sum = float(sum(concordance[a, b] for b in range(n) if b != a))
+            c_opp = float(sum(concordance[b, a] for b in range(n) if b != a))
             net_concordance.append(round(c_sum - c_opp, 6))
 
-            d_sum = sum(discordance[a, b] for b in range(n) if b != a)
-            d_opp = sum(discordance[b, a] for b in range(n) if b != a)
+            d_sum = float(sum(discordance[a, b] for b in range(n) if b != a))
+            d_opp = float(sum(discordance[b, a] for b in range(n) if b != a))
             net_discordance.append(round(d_sum - d_opp, 6))
 
         # ── STEP 6: Net Score & Ranking ──────────────────────────────────
@@ -141,11 +144,22 @@ class ELECTREService:
         for rank, idx in enumerate(sorted_idx):
             ranking[idx] = rank + 1
 
+        # ── STEP 7: Skor 0–100 (dikonsumsi ScoringService) ───────────────
+        # Skor = min-max net score ke skala 100 — identik dengan kolom
+        # "Skor (0–100)" tabel peringkat Lintasan A pada naskah (Tabel 4.9).
+        ns = np.array(net_score, dtype=float)
+        ns_lo, ns_hi = ns.min(), ns.max()
+        if ns_hi > ns_lo:
+            score = (ns - ns_lo) / (ns_hi - ns_lo) * 100.0
+        else:
+            score = np.ones(n) * 100.0
+
         return {
             'concordance_matrix': concordance.tolist(),
             'discordance_matrix': discordance.tolist(),
             'net_concordance': net_concordance,
             'net_discordance': net_discordance,
             'net_score': net_score,
+            'score': [round(float(v), 2) for v in score],
             'ranking': ranking,
         }

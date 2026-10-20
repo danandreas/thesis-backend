@@ -1,27 +1,29 @@
 """
 Service: ScoringService
 Orkestrator utama yang menggabungkan semua algoritma:
-  Fuzzy → EWM → PSO → ELECTRE → Ranking
+  Fuzzy → EWM → PSO → Lintasan A (ELECTRE) + Lintasan B (TOPSIS) → Ranking
 
 Alur lengkap saat admin klik tombol "Generate Ranking":
   1. Ambil semua aplikasi yang sudah submitted untuk satu posisi
   2. Hitung raw_score per kriteria (rata-rata jawaban Likert)
-  3. Fuzzy: konversi raw_score ke fuzzy_value
+  3. Fuzzy: konversi raw_score ke fuzzy_value (shoulder_right, mid dari db)
   4. EWM: hitung bobot objektif dari distribusi data
-  5. PSO: optimasi bobot (kombinasi EWM + manual admin)
-  6. ELECTRE (manual): hitung ranking pakai bobot admin
-  7. ELECTRE (ml)    : hitung ranking pakai bobot PSO
+  5. PSO: penyempurnaan bobot EWM (init EWM + Gaussian; fitness ter-regularisasi)
+     — bobot manual pakar KELUAR dari perhitungan (hanya baseline justifikasi)
+  6. Lintasan A (Fuzzy-ELECTRE)  : concordance → discordance → net → peringkat
+  7. Lintasan B (Fuzzy-TOPSIS)   : solusi ideal → jarak → closeness → peringkat
+     Kedua lintasan memakai matriks v = r × w yang sama (perbandingan terkontrol)
   8. Normalisasi syarat tambahan (IPK, TOEFL, sertifikat)
-  9. Hitung final score gabungan (assessment + syarat)
-  10. Simpan semua hasil ke database
-  11. Return ringkasan hasil
+  9. Hitung final score gabungan (assessment Lintasan A + syarat)
+ 10. Simpan semua hasil ke database (rank_a, rank_b, closeness_b, ρ, τ)
+ 11. Return ringkasan hasil A-vs-B
 """
 
 import time
 from datetime import datetime
 
 import numpy as np
-from scipy.stats import spearmanr
+from scipy.stats import spearmanr, kendalltau
 
 from app import db
 from app.models.candidate import (
@@ -39,6 +41,7 @@ from app.services.fuzzy_service import FuzzyService
 from app.services.ewm_service import EWMService
 from app.services.pso_service import PSOService
 from app.services.electre_service import ELECTREService
+from app.services.topsis_service import TOPSISService
 
 
 class ScoringService:
@@ -53,7 +56,7 @@ class ScoringService:
             triggered_by : ID admin yang menjalankan proses
 
         Returns:
-            dict berisi hasil ranking dan metadata proses
+            dict berisi hasil ranking A-vs-B dan metadata proses
         """
         start_time = time.time()
 
@@ -84,7 +87,7 @@ class ScoringService:
 
     @staticmethod
     def _process(position_id: int, triggered_by: int, log: MlProcessLog) -> dict:
-        """Proses internal scoring lengkap."""
+        """Proses internal scoring lengkap (dua lintasan)."""
 
         # ── STEP 1: Load data posisi & aplikasi ──────────────────────────
         position = RecruitmentPosition.query.get_or_404(position_id)
@@ -153,7 +156,39 @@ class ScoringService:
                 fuzzy_row.append(fuzzy_val)
             fuzzy_matrix.append(fuzzy_row)
 
-        # Simpan criteria_scores ke DB
+        # ── STEP 4: EWM — hitung bobot objektif ──────────────────────────
+        ewm_result = EWMService.compute_weights(fuzzy_matrix)
+        ewm_weights = ewm_result['weights']
+
+        log.ewm_entropy_values = ewm_result['entropy']
+        log.ewm_weights        = {pc_list[j].criteria.code: ewm_weights[j]
+                                   for j in range(n_criteria)}
+
+        # ── STEP 5: Bobot manual (hanya baseline justifikasi tabel) ──────
+        # Bobot manual TIDAK IKUT dalam perhitungan (init PSO maupun ranking)
+        raw_manual = [float(pc.weight_manual) for pc in pc_list]
+        total_manual = sum(raw_manual) or 1.0
+        manual_weights_norm = [w / total_manual for w in raw_manual]
+
+        # ── STEP 6: PSO — penyempurnaan bobot EWM ────────────────────────
+        pso = PSOService(n_particles=30, max_iterations=100)
+        pso_result = pso.optimize_weights(
+            ewm_weights=ewm_weights,
+            decision_matrix=fuzzy_matrix,
+        )
+        pso_weights = pso_result['optimal_weights']
+
+        log.pso_parameters   = PSOService.parameters_dict({
+            'fitness_history': [round(float(v), 6) for v in pso_result['history']],
+        })
+        log.pso_best_weights = {pc_list[j].criteria.code: pso_weights[j] for j in range(n_criteria)}
+        log.pso_best_fitness = pso_result['best_fitness']
+        log.pso_iterations_used = pso_result['iterations_used']
+        log.pso_converged    = pso_result['converged']
+
+        # Simpan criteria_scores ke DB (dengan bobot PSO)
+        generated_at = datetime.utcnow()
+        criteria_types = [pc.criteria_type for pc in pc_list]
         for i, app in enumerate(applications):
             for j, pc in enumerate(pc_list):
                 # Hapus score lama jika ada (re-generate)
@@ -166,41 +201,12 @@ class ScoringService:
                     position_criteria_id=pc.id,
                     raw_score=raw_matrix[i][j],
                     fuzzy_value=fuzzy_matrix[i][j],
+                    weighted_score=round(fuzzy_matrix[i][j] * pso_weights[j], 4),
                 )
                 db.session.add(score)
         db.session.flush()
 
-        # ── STEP 4: EWM — hitung bobot objektif ──────────────────────────
-        ewm_result = EWMService.compute_weights(fuzzy_matrix)
-        ewm_weights = ewm_result['weights']
-
-        log.ewm_entropy_values = ewm_result['entropy']
-        log.ewm_weights        = {pc_list[j].criteria.code: ewm_weights[j]
-                                   for j in range(n_criteria)}
-
-        # ── STEP 5: Bobot manual admin (normalisasi) ──────────────────────
-        raw_manual = [float(pc.weight_manual) for pc in pc_list]
-        total_manual = sum(raw_manual) or 1.0
-        manual_weights_norm = [w / total_manual for w in raw_manual]
-
-        # ── STEP 6: PSO — optimasi bobot ─────────────────────────────────
-        pso = PSOService(n_particles=30, max_iterations=100)
-        pso_result = pso.optimize_weights(
-            ewm_weights=ewm_weights,
-            manual_weights=manual_weights_norm,
-            decision_matrix=fuzzy_matrix,
-            alpha=0.6,  # 60% EWM + 40% manual
-        )
-        ml_weights = pso_result['optimal_weights']
-
-        log.pso_parameters   = {'n_particles': 30, 'max_iter': 100, 'w': 0.7, 'c1': 1.5, 'c2': 1.5}
-        log.pso_best_weights = {pc_list[j].criteria.code: ml_weights[j] for j in range(n_criteria)}
-        log.pso_best_fitness = pso_result['best_fitness']
-        log.pso_iterations_used = pso_result['iterations_used']
-        log.pso_converged    = pso_result['converged']
-
-        # Simpan ml_weight_results ke DB
-        generated_at = datetime.utcnow()
+        # Simpan ml_weight_results ke DB (manual disimpan sbg baseline saja)
         MlWeightResult.query.filter_by(position_id=position_id).delete()
         for j, pc in enumerate(pc_list):
             mwr = MlWeightResult(
@@ -208,8 +214,8 @@ class ScoringService:
                 position_criteria_id=pc.id,
                 weight_manual=manual_weights_norm[j],
                 weight_ewm=ewm_weights[j],
-                weight_final=ml_weights[j],
-                weight_difference=abs(ml_weights[j] - manual_weights_norm[j]),
+                weight_final=pso_weights[j],
+                weight_difference=pso_weights[j] - ewm_weights[j],  # PSO − EWM
                 generated_at=generated_at,
                 pso_iterations=pso_result['iterations_used'],
                 pso_best_fitness=pso_result['best_fitness'],
@@ -217,22 +223,25 @@ class ScoringService:
             db.session.add(mwr)
         db.session.flush()
 
-        # ── STEP 7: ELECTRE — hitung ranking dua versi ───────────────────
-        criteria_types = [pc.criteria_type for pc in pc_list]
-
-        # Versi manual (bobot admin)
-        electre_manual = ELECTREService.compute(
+        # ── STEP 7: Dua lintasan dengan input identik ────────────────────
+        t0 = time.perf_counter()
+        electre_lane_a = ELECTREService.compute(       # Lintasan A
             decision_matrix=fuzzy_matrix,
-            weights=manual_weights_norm,
+            weights=pso_weights,
             criteria_types=criteria_types,
         )
+        duration_a_ms = (time.perf_counter() - t0) * 1000
 
-        # Versi ML (bobot PSO)
-        electre_ml = ELECTREService.compute(
+        t0 = time.perf_counter()
+        topsis_lane_b = TOPSISService.compute(         # Lintasan B
             decision_matrix=fuzzy_matrix,
-            weights=ml_weights,
+            weights=pso_weights,
             criteria_types=criteria_types,
         )
+        duration_b_ms = (time.perf_counter() - t0) * 1000
+
+        rank_a = electre_lane_a['ranking']
+        rank_b = topsis_lane_b['ranking']
 
         # ── STEP 8: Normalisasi syarat tambahan ──────────────────────────
         # IPK, TOEFL, sertifikat → normalized 0-100
@@ -245,47 +254,40 @@ class ScoringService:
         assessment_weight = recruitment.get_assessment_weight() / 100  # jadi 0-1
         req_weight        = 1.0 - assessment_weight
 
-        # ── STEP 9: Hitung final score & simpan ──────────────────────────
-        scores_manual = []
-        scores_ml     = []
+        # ── STEP 9: Final score & simpan scoring_results ─────────────────
+        final_scores = []  # assessment Lintasan A + syarat (dasar keputusan)
 
         for i, app in enumerate(applications):
-            # ELECTRE net score sebagai assessment score (0-1 range → scale ke 0-100)
-            # Normalisasi net score ELECTRE ke 0-100
-            all_net_manual = electre_manual['net_score']
-            all_net_ml     = electre_ml['net_score']
-
-            # Min-max normalisasi net score ke 0-100
-            assess_manual = ScoringService._minmax_scale(
-                electre_manual['net_score'][i], all_net_manual
+            # Net score ELECTRE sebagai assessment score → min-max ke 0-100
+            net_scores_a = electre_lane_a['net_score']
+            assess_a = ScoringService._minmax_scale(
+                net_scores_a[i], net_scores_a
             ) * 100
-            assess_ml = ScoringService._minmax_scale(
-                electre_ml['net_score'][i], all_net_ml
-            ) * 100
+            # Peringkat Lintasan A sebagai dasar final score (legacy kolom _ml)
+            closeness_b = topsis_lane_b['closeness'][i]
 
             req_score = req_scores.get(app.id, 0.0)
 
-            final_manual = (assess_manual * assessment_weight) + (req_score * req_weight)
-            final_ml     = (assess_ml * assessment_weight)     + (req_score * req_weight)
+            final = (assess_a * assessment_weight) + (req_score * req_weight)
+            final_scores.append(final)
 
-            scores_manual.append(final_manual)
-            scores_ml.append(final_ml)
-
-            # Simpan ke scoring_results
+            # Simpan ke scoring_results (kolom _manual disisakan NULL:
+            # bobot manual tidak lagi dihitung sistem)
             ScoringResult.query.filter_by(application_id=app.id).delete()
             sr = ScoringResult(
                 application_id=app.id,
-                assessment_score_manual=round(assess_manual, 4),
-                assessment_score_ml=round(assess_ml, 4),
+                assessment_score_manual=None,
+                assessment_score_ml=round(assess_a, 4),
                 requirements_score=round(req_score, 4),
-                electre_concordance_manual=electre_manual['net_concordance'][i],
-                electre_discordance_manual=electre_manual['net_discordance'][i],
-                electre_net_manual=electre_manual['net_score'][i],
-                electre_concordance_ml=electre_ml['net_concordance'][i],
-                electre_discordance_ml=electre_ml['net_discordance'][i],
-                electre_net_ml=electre_ml['net_score'][i],
-                final_score_manual=round(final_manual, 4),
-                final_score_ml=round(final_ml, 4),
+                electre_concordance_manual=None,
+                electre_discordance_manual=None,
+                electre_net_manual=None,
+                electre_concordance_ml=electre_lane_a['net_concordance'][i],
+                electre_discordance_ml=electre_lane_a['net_discordance'][i],
+                electre_net_ml=electre_lane_a['net_score'][i],
+                closeness_b=closeness_b,
+                final_score_manual=None,
+                final_score_ml=round(final, 4),
                 generated_at=generated_at,
                 generated_by=triggered_by,
             )
@@ -296,43 +298,35 @@ class ScoringService:
 
         db.session.flush()
 
-        # ── STEP 10: Ranking ──────────────────────────────────────────────
-        # Urutkan berdasarkan final_score (bukan hanya ELECTRE)
-        rank_manual_order = sorted(range(n_candidates), key=lambda i: scores_manual[i], reverse=True)
-        rank_ml_order     = sorted(range(n_candidates), key=lambda i: scores_ml[i], reverse=True)
-
-        rank_manual = [0] * n_candidates
-        rank_ml     = [0] * n_candidates
-        for rank, idx in enumerate(rank_manual_order):
-            rank_manual[idx] = rank + 1
-        for rank, idx in enumerate(rank_ml_order):
-            rank_ml[idx] = rank + 1
-
-        quota = position.quota
+        # ── STEP 10: Ranking kedua lintasan ──────────────────────────────
         RankingResult.query.filter_by(position_id=position_id).delete()
 
+        quota = position.quota
         for i, app in enumerate(applications):
             rr = RankingResult(
                 position_id=position_id,
                 application_id=app.id,
-                rank_manual=rank_manual[i],
-                final_score_manual=round(scores_manual[i], 4),
-                rank_ml=rank_ml[i],
-                final_score_ml=round(scores_ml[i], 4),
-                is_recommended=(rank_ml[i] <= quota),  # default pakai ML
+                rank_manual=None,                       # bobot manual keluar
+                final_score_manual=None,
+                rank_ml=rank_a[i],                      # legacy: dasar rekomendasi
+                final_score_ml=round(final_scores[i], 4),
+                rank_a=rank_a[i],
+                rank_b=rank_b[i],
+                is_recommended=(rank_a[i] <= quota),
                 final_status='pending',
                 generated_at=generated_at,
             )
             db.session.add(rr)
 
-        # ── STEP 11: Spearman Correlation (perbandingan ranking) ──────────
-        if n_candidates >= 3:
-            corr, _ = spearmanr(rank_manual, rank_ml)
-            log.spearman_correlation = round(float(corr), 4)
-            log.rank_changes_count = sum(
-                1 for a, b in zip(rank_manual, rank_ml) if a != b
-            )
+        db.session.flush()
 
+        # ── STEP 11: Kesepakatan antar lintasan (ρ & τ) ──────────────────
+        if n_candidates >= 3:
+            corr, _ = spearmanr(rank_a, rank_b)
+            log.spearman_correlation = round(float(corr), 4)
+            tau, _ = kendalltau(rank_a, rank_b)
+            log.kendall_tau = round(float(tau), 4)
+        log.rank_changes_count = sum(1 for a, b in zip(rank_a, rank_b) if a != b)
         db.session.commit()
 
         # Susun response
@@ -342,15 +336,19 @@ class ScoringService:
                 'application_id': app.id,
                 'candidate_name': app.user.name,
                 'candidate_email': app.user.email,
-                'rank_manual': rank_manual[i],
-                'rank_ml': rank_ml[i],
-                'final_score_manual': round(scores_manual[i], 4),
-                'final_score_ml': round(scores_ml[i], 4),
-                'is_recommended': rank_ml[i] <= quota,
+                'rank_a': rank_a[i],
+                'skor_a': electre_lane_a['score'][i],
+                'rank_b': rank_b[i],
+                'skor_b': topsis_lane_b['score'][i],
+                'closeness_b': topsis_lane_b['closeness'][i],
+                'rank_ml': rank_a[i],            # legacy frontend lama
+                'final_score_ml': round(final_scores[i], 4),
+                'is_recommended': rank_a[i] <= quota,
+                'final_status': 'pending',
             })
 
-        # Urutkan berdasarkan rank_ml untuk tampilan
-        ranking_summary.sort(key=lambda x: x['rank_ml'])
+        # Urutkan berdasarkan rank_a untuk tampilan
+        ranking_summary.sort(key=lambda x: x['rank_a'])
 
         return {
             'position_id': position_id,
@@ -361,16 +359,21 @@ class ScoringService:
             'requirement_weight_pct': round(req_weight * 100, 2),
             'pso_converged': pso_result['converged'],
             'pso_iterations': pso_result['iterations_used'],
+            'pso_best_fitness': round(pso_result['best_fitness'], 6),
             'spearman_correlation': log.spearman_correlation,
+            'kendall_tau': log.kendall_tau,
+            'rank_agreement': log.rank_changes_count == 0,
+            'duration_a_ms': round(duration_a_ms, 2),
+            'duration_b_ms': round(duration_b_ms, 2),
             'ranking': ranking_summary,
             'weight_comparison': [
                 {
                     'criteria_code': pc_list[j].criteria.code,
                     'criteria_name': pc_list[j].criteria.name,
-                    'weight_manual': round(manual_weights_norm[j], 6),
+                    'weight_manual': round(manual_weights_norm[j], 6),  # baseline
                     'weight_ewm': round(ewm_weights[j], 6),
-                    'weight_ml': round(ml_weights[j], 6),
-                    'difference': round(abs(ml_weights[j] - manual_weights_norm[j]), 6),
+                    'weight_ml': round(pso_weights[j], 6),
+                    'difference': round(pso_weights[j] - ewm_weights[j], 6),
                 }
                 for j in range(n_criteria)
             ],

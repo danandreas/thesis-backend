@@ -30,8 +30,8 @@ def api_info():
             "name": "Psychoposition API",
             "version": "1.0.0",
             "description": (
-                "REST API untuk sistem seleksi kandidat berbasis psikologi "
-                "menggunakan metode AHP dan machine learning."
+                "REST API untuk sistem rekomendasi penempatan kandidat karyawan: "
+                "perbandingan Fuzzy-ELECTRE dan Fuzzy-TOPSIS dengan optimasi bobot EWM-PSO."
             ),
             "language": "Python",
             "framework": "Flask",
@@ -151,14 +151,14 @@ api_bp.add_url_rule('/content/applications/<int:application_id>/result',    view
 # Report: Admin
 from app.controllers.report.report_controller import (
     generate_ranking, ranking_by_position, ranking_detail,
-    choose_ranking_version, finalize_candidate,
+    finalize_position, finalize_candidate,
     verify_requirements, dashboard, ml_logs,
 )
 api_bp.add_url_rule('/report/dashboard',                                          view_func=dashboard,              methods=['GET'],  endpoint='dashboard')
 api_bp.add_url_rule('/report/generate/<int:position_id>',                         view_func=generate_ranking,       methods=['POST'], endpoint='generate_ranking')
 api_bp.add_url_rule('/report/ranking/<int:position_id>',                          view_func=ranking_by_position,    methods=['GET'],  endpoint='ranking_by_position')
 api_bp.add_url_rule('/report/ranking/<int:position_id>/detail/<int:application_id>', view_func=ranking_detail,      methods=['GET'],  endpoint='ranking_detail')
-api_bp.add_url_rule('/report/ranking/<int:position_id>/choose',                   view_func=choose_ranking_version, methods=['POST'], endpoint='choose_ranking_version')
+api_bp.add_url_rule('/report/ranking/<int:position_id>/finalize',                 view_func=finalize_position,      methods=['POST'], endpoint='finalize_position')
 api_bp.add_url_rule('/report/ranking/<int:position_id>/finalize/<int:application_id>', view_func=finalize_candidate, methods=['POST'],endpoint='finalize_candidate')
 api_bp.add_url_rule('/report/applications/<int:application_id>/verify-requirements', view_func=verify_requirements, methods=['PUT'],  endpoint='verify_requirements')
 api_bp.add_url_rule('/report/ml-logs/<int:position_id>',                          view_func=ml_logs,                methods=['GET'],  endpoint='ml_logs')
