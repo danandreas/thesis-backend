@@ -106,6 +106,8 @@ def ranking_by_position(position_id):
             'rank_changes_count': log_last.rank_changes_count,
             'total_candidates': log_last.total_candidates,
             'process_duration_ms': log_last.process_duration_ms,
+            'duration_a_ms': params.get('duration_a_ms'),
+            'duration_b_ms': params.get('duration_b_ms'),
             'processed_at': log_last.processed_at.isoformat() if log_last.processed_at else None,
         }
 
@@ -117,6 +119,14 @@ def ranking_by_position(position_id):
         item['closeness_b'] = round(closes[i], 4)
         item['electre_net_ml'] = round(nets[i], 4)
         item['d_rank'] = (r.rank_a or 0) - (r.rank_b or 0)  # displacement
+        # Metrik asli kedua lintasan (beda semesta dari skor 0-100):
+        # A — net concordance/discordance/score mentah; B — jarak D⁺/D⁻
+        sr_i = sr_by_app.get(r.application_id)
+        item['net_concordance_a'] = float(sr_i.electre_concordance_ml) if sr_i and sr_i.electre_concordance_ml is not None else None
+        item['net_discordance_a'] = float(sr_i.electre_discordance_ml) if sr_i and sr_i.electre_discordance_ml is not None else None
+        item['net_a'] = round(nets[i], 4)
+        item['d_plus_b'] = float(sr_i.d_plus_b) if sr_i and sr_i.d_plus_b is not None else None
+        item['d_minus_b'] = float(sr_i.d_minus_b) if sr_i and sr_i.d_minus_b is not None else None
         ranking_items.append(item)
 
     return success(data={

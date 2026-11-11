@@ -116,8 +116,10 @@ class ScoringResult(BaseModel):
     electre_discordance_ml      = db.Column(db.Numeric(10, 4), nullable=True)
     electre_net_ml              = db.Column(db.Numeric(10, 4), nullable=True)
 
-    # Lintasan B — Fuzzy-TOPSIS (closeness 0-1)
+    # Lintasan B — Fuzzy-TOPSIS (closeness 0-1, jarak Euclidean ke A⁺/A⁻)
     closeness_b                 = db.Column(db.Numeric(10, 4), nullable=True)
+    d_plus_b                    = db.Column(db.Numeric(10, 6), nullable=True)
+    d_minus_b                   = db.Column(db.Numeric(10, 6), nullable=True)
 
     # Skor final gabungan — dua versi
     final_score_manual        = db.Column(db.Numeric(10, 4), nullable=True)
@@ -139,6 +141,8 @@ class ScoringResult(BaseModel):
             'closeness_b', 'final_score_manual', 'final_score_ml'
         ]
         for f in numeric_fields:
+            data[f] = float(data[f]) if data[f] is not None else None
+        for f in ['d_plus_b', 'd_minus_b']:
             data[f] = float(data[f]) if data[f] is not None else None
         return data
 

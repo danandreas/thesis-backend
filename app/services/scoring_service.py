@@ -240,6 +240,13 @@ class ScoringService:
         )
         duration_b_ms = (time.perf_counter() - t0) * 1000
 
+        # Durasi per lintasan ikut ke log (dibaca ulang pada GET ranking)
+        log.pso_parameters = {
+            **(log.pso_parameters or {}),
+            'duration_a_ms': round(duration_a_ms, 3),
+            'duration_b_ms': round(duration_b_ms, 3),
+        }
+
         rank_a = electre_lane_a['ranking']
         rank_b = topsis_lane_b['ranking']
 
@@ -286,6 +293,8 @@ class ScoringService:
                 electre_discordance_ml=electre_lane_a['net_discordance'][i],
                 electre_net_ml=electre_lane_a['net_score'][i],
                 closeness_b=closeness_b,
+                d_plus_b=round(topsis_lane_b['distance_positive'][i], 6),
+                d_minus_b=round(topsis_lane_b['distance_negative'][i], 6),
                 final_score_manual=None,
                 final_score_ml=round(final, 4),
                 generated_at=generated_at,
@@ -338,9 +347,16 @@ class ScoringService:
                 'candidate_email': app.user.email,
                 'rank_a': rank_a[i],
                 'skor_a': electre_lane_a['score'][i],
+                # Metrik asli Lintasan A (ELECTRE) — berbeda semesta dgn Skor A
+                'net_concordance_a': electre_lane_a['net_concordance'][i],
+                'net_discordance_a': electre_lane_a['net_discordance'][i],
+                'net_a': electre_lane_a['net_score'][i],
                 'rank_b': rank_b[i],
                 'skor_b': topsis_lane_b['score'][i],
                 'closeness_b': topsis_lane_b['closeness'][i],
+                # Metrik asli Lintasan B (TOPSIS)
+                'd_plus_b': round(topsis_lane_b['distance_positive'][i], 6),
+                'd_minus_b': round(topsis_lane_b['distance_negative'][i], 6),
                 'rank_ml': rank_a[i],            # legacy frontend lama
                 'final_score_ml': round(final_scores[i], 4),
                 'is_recommended': rank_a[i] <= quota,

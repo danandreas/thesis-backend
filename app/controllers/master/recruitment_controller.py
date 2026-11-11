@@ -349,16 +349,36 @@ def position_criteria_setup(recruitment_id, position_id):
         id=position_id, recruitment_id=recruitment_id
     ).first_or_404()
     body  = request.get_json() or {}
-    items = body.get('criteria', [])
+
+    # Bentuk body terbungkus {"criteria": [...]} berarti ganti seluruh setup (replace);
+    # bentuk body polos {criteria_id, weight_manual, ...} dari UI berarti tambah satu
+    # kriteria baru ke setup yang sudah berjalan tanpa menghapus setup lama.
+    replace_mode = 'criteria' in body
+    if replace_mode:
+        items = body.get('criteria') or []
+    elif body.get('criteria_id'):
+        items = [body]
+    else:
+        items = []
 
     if not items:
         return error("Minimal satu kriteria harus diisi.", 422)
 
-    # Hapus setup lama
-    PositionCriteria.query.filter_by(position_id=position_id).delete()
+    if replace_mode:
+        # Hapus setup lama
+        PositionCriteria.query.filter_by(position_id=position_id).delete()
+
+    start_order = 0 if replace_mode else PositionCriteria.query.filter_by(
+        position_id=position_id).count()
 
     for i, c in enumerate(items):
         crit_id = c.get('criteria_id')
+        if not replace_mode:
+            sudah = PositionCriteria.query.filter_by(
+                position_id=position_id, criteria_id=crit_id
+            ).first()
+            if sudah:
+                return error("Kriteria tersebut sudah ada pada posisi ini.", 422)
         if not Criteria.query.get(crit_id):
             return error(f"criteria_id {crit_id} tidak ditemukan.", 404)
 
@@ -370,7 +390,7 @@ def position_criteria_setup(recruitment_id, position_id):
             fuzzy_mid=float(c.get('fuzzy_mid', 3)),
             fuzzy_high=float(c.get('fuzzy_high', 5)),
             criteria_type=c.get('criteria_type', 'benefit'),
-            display_order=i,
+            display_order=start_order + i,
         )
         db.session.add(pc)
 
@@ -451,13 +471,24 @@ def question_store(position_criteria_id):
     db.session.add(q)
     db.session.flush()
 
-    # Tambah options sekaligus jika disertakan
-    for i, opt in enumerate(body.get('options', [])):
+    # Tambah options sekaligus jika disertakan; bila UI tidak mengirim opsi apa pun,
+    # isikan lima opsi Likert standar (samadengan seeder) agar pertanyaan baru
+    # langsung dapat dijawab kandidat.
+    opts = body.get('options')
+    if not opts:
+        opts = [
+            {'option_text': 'Tidak Pernah / Sangat Tidak Setuju', 'option_value': 1},
+            {'option_text': 'Jarang / Tidak Setuju',              'option_value': 2},
+            {'option_text': 'Kadang-kadang / Netral',             'option_value': 3},
+            {'option_text': 'Sering / Setuju',                    'option_value': 4},
+            {'option_text': 'Selalu / Sangat Setuju',             'option_value': 5},
+        ]
+    for i, opt in enumerate(opts):
         o = AssessmentOption(
             question_id=q.id,
             option_text=opt.get('option_text', ''),
             option_value=float(opt.get('option_value', i + 1)),
-            display_order=i,
+            display_order=opt.get('option_value', i + 1),
         )
         db.session.add(o)
 
